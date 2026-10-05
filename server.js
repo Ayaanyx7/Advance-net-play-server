@@ -3,7 +3,7 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 8080;
 const MAX_PLAYERS = 4;
 
-const rooms = new Map(); // room name -> { sockets: Map<id, ws> }
+const rooms = new Map(); // room name -> { sockets: Map<id, ws>, game: string }
 
 const wss = new WebSocketServer({ port: PORT });
 
@@ -16,11 +16,22 @@ wss.on('connection', (ws) => {
         try {
             msg = JSON.parse(raw);
         } catch {
-            return; // ignore malformed messages, no crash
+            return;
+        }
+
+        if (msg.type === 'list') {
+            const list = [];
+            for (const [name, room] of rooms) {
+                if (room.game === msg.game && room.sockets.size < MAX_PLAYERS) {
+                    list.push({ name, players: room.sockets.size });
+                }
+            }
+            ws.send(JSON.stringify({ type: 'roomlist', rooms: list }));
+            return;
         }
 
         if (msg.type === 'host' || msg.type === 'join') {
-            if (roomName !== null) return; // already paired, ignore
+            if (roomName !== null) return;
 
             roomName = msg.room;
             let room = rooms.get(roomName);
@@ -31,7 +42,7 @@ wss.on('connection', (ws) => {
                     roomName = null;
                     return;
                 }
-                room = { sockets: new Map() };
+                room = { sockets: new Map(), game: msg.game };
                 rooms.set(roomName, room);
                 myId = 0;
             } else {
@@ -40,12 +51,16 @@ wss.on('connection', (ws) => {
                     roomName = null;
                     return;
                 }
+                if (room.game !== msg.game) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'room is for a different game' }));
+                    roomName = null;
+                    return;
+                }
                 if (room.sockets.size >= MAX_PLAYERS) {
                     ws.send(JSON.stringify({ type: 'error', message: 'room full' }));
                     roomName = null;
                     return;
                 }
-                // Assign the lowest free id in 1..3
                 for (let i = 1; i < MAX_PLAYERS; i++) {
                     if (!room.sockets.has(i)) { myId = i; break; }
                 }
@@ -74,7 +89,7 @@ wss.on('connection', (ws) => {
         if (!room) return;
         room.sockets.delete(myId);
         if (room.sockets.size === 0) {
-            rooms.delete(roomName); // clean up empty rooms
+            rooms.delete(roomName);
         }
     });
 });
